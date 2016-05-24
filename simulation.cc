@@ -118,10 +118,10 @@ Simulation::~Simulation()
 }
 
 Simulation*
-Simulation::createSimulation(Config *config, RankInfo my_rank, RankInfo num_ranks)
+Simulation::createSimulation(Config *config, RankInfo my_rank, RankInfo num_ranks, SimTime_t min_part)
 {
     std::thread::id tid = std::this_thread::get_id();
-    Simulation* instance = new Simulation(config, my_rank, num_ranks);
+    Simulation* instance = new Simulation(config, my_rank, num_ranks, min_part);
 
     std::lock_guard<std::mutex> lock(simulationMutex);
     instanceMap[tid] = instance;
@@ -138,9 +138,10 @@ void Simulation::shutdown()
 
 
 
-Simulation::Simulation( Config* cfg, RankInfo my_rank, RankInfo num_ranks) :
+Simulation::Simulation( Config* cfg, RankInfo my_rank, RankInfo num_ranks, SimTime_t min_part) :
     runMode(cfg->runMode),
     timeVortex(NULL),
+    interThreadMinLatency(MAX_SIMTIME_T),
     threadSync(NULL),
     currentSimCycle(0),
     endSimCycle(0),
@@ -161,7 +162,8 @@ Simulation::Simulation( Config* cfg, RankInfo my_rank, RankInfo num_ranks) :
 
     timeVortex = new TimeVortex;
     if( my_rank.thread == 0 ) {
-        m_exit = new Exit( num_ranks.thread, timeLord.getTimeConverter("100ns"), num_ranks.rank == 1 );
+        // m_exit = new Exit( num_ranks.thread, timeLord.getTimeConverter("100ns"), num_ranks.rank == 1 );
+        m_exit = new Exit( num_ranks.thread, timeLord.getTimeConverter("100ns"), min_part == MAX_SIMTIME_T );
     }
 
     if(strcmp(cfg->heartbeatPeriod.c_str(), "N") != 0 && my_rank.thread == 0) {
@@ -234,18 +236,21 @@ Simulation::getLocalMinimumNextActivityTime()
 void
 Simulation::processGraphInfo( ConfigGraph& graph, const RankInfo& myRank, SimTime_t min_part )
 {
+    // TraceFunction trace(CALL_INFO_LONG);    
     // Set minPartTC (only thread 0 will do this)
+    Simulation::minPart = min_part;
     if ( my_rank.thread == 0 ) {
         minPartTC = minPartToTC(min_part);
     }
 
     // Get the minimum latencies for links between the various threads
-    
     interThreadLatencies.resize(num_ranks.thread);
     for ( int i = 0; i < interThreadLatencies.size(); i++ ) {
         interThreadLatencies[i] = MAX_SIMTIME_T;
     }
 
+    interThreadMinLatency = MAX_SIMTIME_T;
+    int cross_thread_links = 0;
     if ( num_ranks.thread > 1 ) {
         // Need to determine the lookahead for the thread synchronization
         ConfigComponentMap_t comps = graph.getComponentMap();
@@ -256,12 +261,27 @@ Simulation::processGraphInfo( ConfigGraph& graph, const RankInfo& myRank, SimTim
             RankInfo rank[2];
             rank[0] = comps[clink.component[0]].rank;
             rank[1] = comps[clink.component[1]].rank;
-            // We only care about links that are on the same rank, but
+            // We only care about links that are on my rank, but
             // different threads
+
+            // Neither endpoint is on my rank
+            if ( rank[0].rank != my_rank.rank && rank[1].rank != my_rank.rank ) continue;
+            // Rank and thread are the same
             if ( rank[0] == rank[1] ) continue;
+            // Different ranks, so doesn't affect interthread dependencies
             if ( rank[0].rank != rank[1].rank ) continue;
-            // Keep track of minimum latency for each other thread
-            // separately
+
+            // At this point, we know that both endpoints are on this
+            // rank, but on diffrent threads.  Therefore, they
+            // contribute to the interThreadMinLatency.
+            cross_thread_links++;
+            if ( clink.getMinLatency() < interThreadMinLatency ) {
+                interThreadMinLatency = clink.getMinLatency();
+            }
+
+            // Now check only those latencies that directly impact this
+            // thread.  Keep track of minimum latency for each other
+            // thread separately
             if ( rank[0].thread == my_rank.thread) { 
                 if ( clink.getMinLatency() < interThreadLatencies[rank[1].thread] ) {
                     interThreadLatencies[rank[1].thread] = clink.getMinLatency();
@@ -277,7 +297,23 @@ Simulation::processGraphInfo( ConfigGraph& graph, const RankInfo& myRank, SimTim
     // Create the SyncManager for this rank.  It gets created even if
     // we are single rank/single thread because it also manages the
     // Exit and Heartbeat actions.
-    syncManager = new SyncManager(my_rank, num_ranks, barrier, minPartTC = minPartToTC(min_part), interThreadLatencies);
+    syncManager = new SyncManager(my_rank, num_ranks, barrier, minPartTC = minPartToTC(min_part), min_part, interThreadLatencies);
+
+    // Determine if this thread is independent.  That means there is
+    // no need to synchronize with any other threads or ranks.
+    // if ( min_part == MAX_SIMTIME_T ) {
+    //     independent = true;
+    //     for ( int i = 0; i < num_ranks.thread; i++ ) {
+    //         if ( interThreadLatencies[i] != MAX_SIMTIME_T ) independent = false;
+    //     }
+    // }
+    if ( min_part == MAX_SIMTIME_T && cross_thread_links == 0 ) {
+        independent = true;
+    }
+    else {
+        independent = false;
+    }
+    // if ( independent ) std::cout << "thread " << my_rank.thread <<  " is independent" << std::endl;
 }
     
 int Simulation::performWireUp( ConfigGraph& graph, const RankInfo& myRank, SimTime_t min_part )
@@ -342,7 +378,7 @@ int Simulation::performWireUp( ConfigGraph& graph, const RankInfo& myRank, SimTi
         // we need to put in a sync interval to look for the exit
         // conditions being met.
         if ( look_ahead == MAX_SIMTIME_T ) {
-            std::cout << "No links cross thread boundary" << std::endl;
+            // std::cout << "No links cross thread boundary" << std::endl;
         }
         if ( look_ahead == MAX_SIMTIME_T && num_ranks.rank == 1) {
             // std::cout << "No links cross thread boundary" << std::endl;
@@ -654,7 +690,7 @@ void Simulation::setup() {
 }
 
 void Simulation::run() {
-    // TraceFunction(CALL_INFO_LONG);    
+    // TraceFunction trace(CALL_INFO_LONG);
 
     // Put a stop event at the end of the timeVortex. Simulation will
     // only get to this is there are no other events in the queue.
@@ -666,6 +702,17 @@ void Simulation::run() {
     sa->setDeliveryTime(SST_SIMTIME_MAX);
     timeVortex->insert(sa);
 
+    // If this is an independent thread and we have no components,
+    // just end
+    if ( independent ) {
+        if ( compInfoMap.empty() ) {
+            // std::cout << "Thread " << my_rank.thread << " is exiting with nothing to do" << std::endl;
+            StopAction* sa = new StopAction();
+            sa->setDeliveryTime(0);
+            timeVortex->insert(sa);
+        }
+    }
+    
     // Tell the Statistics Engine that the simulation is beginning
     statisticsEngine->startOfSimulation();
 
@@ -680,7 +727,7 @@ void Simulation::run() {
         currentSimCycle = timeVortex->front()->getDeliveryTime();
         currentPriority = timeVortex->front()->getPriority();
         current_activity = timeVortex->pop();
-        // current_activity->print(header, sim_output);
+        //current_activity->print(header, sim_output);
         current_activity->execute();
 
 
@@ -743,6 +790,7 @@ void Simulation::endSimulation(SimTime_t end)
     // must enter and set flag before any will exit.
     // exit_barrier.wait();
 
+    // if ( my_rank.thread == 1 ) sim_output.fatal(CALL_INFO,-1,"endSimulation called with end = %llu\n", end);
     endSimCycle = end;
     endSim = true;
 
@@ -1043,6 +1091,7 @@ Core::ThreadSafe::Barrier Simulation::barrier;
 Core::ThreadSafe::Barrier Simulation::exit_barrier;
 std::mutex Simulation::simulationMutex;
 TimeConverter* Simulation::minPartTC = NULL;
+SimTime_t Simulation::minPart;
 SyncBase* Simulation::sync = NULL;
 
 

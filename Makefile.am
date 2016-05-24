@@ -39,6 +39,7 @@ nobase_dist_sst_HEADERS = \
 	event.h \
 	exit.h \
 	factory.h \
+	from_string.h \
 	heartbeat.h \
 	initQueue.h \
 	introspectAction.h \
@@ -59,6 +60,7 @@ nobase_dist_sst_HEADERS = \
 	profile.h \
 	rankInfo.h \
 	rankSync.h \
+	rankSyncParallelSkip.h \
 	rankSyncSerialSkip.h \
 	simulation.h \
 	serialization.h \
@@ -86,6 +88,24 @@ nobase_dist_sst_HEADERS = \
 	serialization/core.h \
 	serialization/types.h \
 	serialization/element.h \
+	serialization/ser_ptr_type.h \
+	serialization/serializable.h \
+	serialization/serializable_fwd.h \
+	serialization/serialize.h \
+	serialization/serialize_array.h \
+	serialization/serialize_buffer_accessor.h \
+	serialization/serialize_list.h \
+	serialization/serialize_map.h \
+	serialization/serialize_packer.h \
+	serialization/serialize_serializable.h \
+	serialization/serialize_set.h \
+	serialization/serialize_sizer.h \
+	serialization/serialize_string.h \
+	serialization/serialize_unpacker.h \
+	serialization/serialize_vector.h \
+	serialization/serializer.h \
+	serialization/serializer_fwd.h \
+	serialization/statics.h \
 	interfaces/TestEvent.h \
 	interfaces/stringEvent.h \
 	interfaces/simpleMem.h \
@@ -158,6 +178,7 @@ sst_core_sources = \
 	pollingLinkQueue.cc \
 	rankInfo.cc \
 	rankSync.cc \
+	rankSyncParallelSkip.cc \
 	rankSyncSerialSkip.cc \
 	simulation.cc \
 	subcomponent.cc \
@@ -181,6 +202,10 @@ sst_core_sources = \
 	rng/marsaglia.cc \
 	rng/mersenne.cc \
 	rng/xorshift.cc \
+	serialization/serializable.cc \
+	serialization/serialize_serializable.cc \
+	serialization/serializer.cc \
+	serialization/statics.cc \
 	statapi/statengine.cc \
 	statapi/statoutput.cc \
 	statapi/statfieldinfo.cc \

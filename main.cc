@@ -217,7 +217,7 @@ static void start_simulation(uint32_t tid, SimThreadInfo_t &info, Core::ThreadSa
     }
 
     ////// Create Simulation Objects //////
-    SST::Simulation* sim = Simulation::createSimulation(info.config, info.myRank, info.world_size);
+    SST::Simulation* sim = Simulation::createSimulation(info.config, info.myRank, info.world_size, info.min_part);
 
     barrier.wait();
 
@@ -339,7 +339,8 @@ static void start_simulation(uint32_t tid, SimThreadInfo_t &info, Core::ThreadSa
     barrier.wait();
 
     info.simulated_time = sim->getFinalSimTime();
-
+    // g_output.output(CALL_INFO,"Simulation time = %s\n",info.simulated_time.toStringBestSI().c_str());
+    
     double end_time = sst_get_cpu_time();
     info.run_time = end_time - start_run;
 
@@ -351,17 +352,11 @@ static void start_simulation(uint32_t tid, SimThreadInfo_t &info, Core::ThreadSa
 
 }
 
-
-
-
-
-
-
-
 int
 main(int argc, char *argv[])
 {
 
+    
 #ifdef SST_CONFIG_HAVE_MPI
     MPI_Init(&argc, &argv);
 
@@ -549,7 +544,7 @@ main(int argc, char *argv[])
                 RankInfo rank[2];
                 rank[0] = comps[clink.component[0]].rank;
                 rank[1] = comps[clink.component[1]].rank;
-                if ( rank[0] == rank[1] ) continue;
+                if ( rank[0].rank == rank[1].rank ) continue;
                 if ( clink.getMinLatency() < min_part ) {
                     min_part = clink.getMinLatency();
                 }
@@ -562,10 +557,10 @@ main(int argc, char *argv[])
         // links that cross the boundary and we're a multi-rank job,
         // we need to put in a sync interval to look for the exit
         // conditions being met.
-        if ( min_part == MAX_SIMTIME_T ) {
-            // std::cout << "No links cross rank boundary" << std::endl;
-            min_part = Simulation::getTimeLord()->getSimCycles("1us","");
-        }
+        // if ( min_part == MAX_SIMTIME_T ) {
+        //     // std::cout << "No links cross rank boundary" << std::endl;
+        //     min_part = Simulation::getTimeLord()->getSimCycles("1us","");
+        // }
 
         // broadcast(world, min_part, 0);
         Comms::broadcast(min_part, 0);
@@ -655,8 +650,12 @@ main(int argc, char *argv[])
         g_output.output("\n");
 
         g_output.output("Statistic Output Parameters Provided:\n");
-        for (Params::const_iterator it = graph->getStatOutputParams().begin(); it != graph->getStatOutputParams().end(); ++it ) {
-            g_output.output("  %s = %s\n", Params::getParamName(it->first).c_str(), it->second.c_str());
+        // for (Params::const_iterator it = graph->getStatOutputParams().begin(); it != graph->getStatOutputParams().end(); ++it ) {
+        //     g_output.output("  %s = %s\n", Params::getParamName(it->first).c_str(), it->second.c_str());
+        // }
+        std::set<std::string> keys = graph->getStatOutputParams().getKeys();
+        for (auto it = keys.begin(); it != keys.end(); ++it ) {
+            g_output.output("  %s = %s\n", it->c_str(), graph->getStatOutputParams().find<std::string>(*it).c_str());
         }
         g_output.fatal(CALL_INFO, -1, " - Required Statistic Output Parameters not set\n");
     }
@@ -671,8 +670,10 @@ main(int argc, char *argv[])
     Simulation::statisticsOutput = so;
     Simulation::sim_output = g_output;
     Simulation::barrier.resize(world_size.thread);
+    #ifdef USE_MEMPOOL
     /* Estimate that we won't have more than 128 sizes of events */
     Activity::memPools.reserve(world_size.thread * 128);
+    #endif
 
     std::vector<std::thread> threads(world_size.thread);
     std::vector<SimThreadInfo_t> threadInfo(world_size.thread);
@@ -704,6 +705,7 @@ main(int argc, char *argv[])
     double total_end_time = sst_get_cpu_time();
 
     for ( uint32_t i = 1 ; i < world_size.thread ; i++ ) {
+        // g_output.output(CALL_INFO,"simulated_time = %s, %s\n",threadInfo[0].simulated_time.toStringBestSI().c_str(),threadInfo[1].simulated_time.toStringBestSI().c_str());
         threadInfo[0].simulated_time = std::max(threadInfo[0].simulated_time, threadInfo[i].simulated_time);
         threadInfo[0].run_time = std::max(threadInfo[0].run_time, threadInfo[i].run_time);
         threadInfo[0].build_time = std::max(threadInfo[0].build_time, threadInfo[i].build_time);
@@ -766,7 +768,7 @@ main(int argc, char *argv[])
     const uint64_t global_max_io_in  = maxInputOperations();
     const uint64_t global_max_io_out = maxOutputOperations();
 
-    if ( myRank.rank == 0 && cfg.verbose ) {
+    if ( myRank.rank == 0 && ( cfg.verbose || cfg.printTimingInfo() ) ) {
         char ua_buffer[256];
         sprintf(ua_buffer, "%" PRIu64 "KB", local_max_rss);
         UnitAlgebra max_rss_ua(ua_buffer);
@@ -786,45 +788,45 @@ main(int argc, char *argv[])
         sprintf(ua_buffer, "%" PRIu64 "B", global_mempool_size);
         UnitAlgebra global_mempool_size_ua(ua_buffer);
         
-        g_output.verbose(CALL_INFO, 1, 0, "\n");
-        g_output.verbose(CALL_INFO, 1, 0, "\n");
-        g_output.verbose(CALL_INFO, 1, 0, "------------------------------------------------------------\n");
-        g_output.verbose(CALL_INFO, 1, 0, "Simulation Timing Information:\n");
-        g_output.verbose(CALL_INFO, 1, 0, "Build time:                      %f seconds\n", max_build_time);
-        g_output.verbose(CALL_INFO, 1, 0, "Simulation time:                 %f seconds\n", max_run_time);
-        g_output.verbose(CALL_INFO, 1, 0, "Total time:                      %f seconds\n", max_total_time);
-        g_output.verbose(CALL_INFO, 1, 0, "Simulated time:                  %s\n", threadInfo[0].simulated_time.toStringBestSI().c_str());
-        g_output.verbose(CALL_INFO, 1, 0, "\n");
-        g_output.verbose(CALL_INFO, 1, 0, "Simulation Resource Information:\n");
-        g_output.verbose(CALL_INFO, 1, 0, "Max Resident Set Size:           %s\n",
-                max_rss_ua.toStringBestSI().c_str());
-        g_output.verbose(CALL_INFO, 1, 0, "Approx. Global Max RSS Size:     %s\n",
-                global_rss_ua.toStringBestSI().c_str());
-        g_output.verbose(CALL_INFO, 1, 0, "Max Local Page Faults:           %" PRIu64 " faults\n",
-                local_max_pf);
-        g_output.verbose(CALL_INFO, 1, 0, "Global Page Faults:              %" PRIu64 " faults\n",
-                global_pf);
-        g_output.verbose(CALL_INFO, 1, 0, "Max Output Blocks:               %" PRIu64 " blocks\n",
-                global_max_io_in);
-        g_output.verbose(CALL_INFO, 1, 0, "Max Input Blocks:                %" PRIu64 " blocks\n",
-                global_max_io_out);
-        g_output.verbose(CALL_INFO, 1, 0, "Max mempool usage:               %s\n",
-                max_mempool_size_ua.toStringBestSI().c_str());
-        g_output.verbose(CALL_INFO, 1, 0, "Global mempool usage:            %s\n",
-                global_mempool_size_ua.toStringBestSI().c_str());
-        g_output.verbose(CALL_INFO, 1, 0, "Global active activities:        %" PRIu64 " activities\n",
-                global_active_activities);
-        g_output.verbose(CALL_INFO, 1, 0, "Current global TimeVortex depth: %" PRIu64 " entries\n",
-                global_current_tv_depth);
-        g_output.verbose(CALL_INFO, 1, 0, "Max TimeVortex depth:            %" PRIu64 " entries\n",
-                global_max_tv_depth);
-        g_output.verbose(CALL_INFO, 1, 0, "Max Sync data size:              %s\n",
-                global_max_sync_data_size_ua.toStringBestSI().c_str());
-        g_output.verbose(CALL_INFO, 1, 0, "Global Sync data size:           %s\n",
-                global_sync_data_size_ua.toStringBestSI().c_str());
-        g_output.verbose(CALL_INFO, 1, 0, "------------------------------------------------------------\n");
-        g_output.verbose(CALL_INFO, 1, 0, "\n");
+        g_output.output( "\n");
         g_output.output("\n");
+        g_output.output( "------------------------------------------------------------\n");
+        g_output.output( "Simulation Timing Information:\n");
+        g_output.output( "Build time:                      %f seconds\n", max_build_time);
+        g_output.output( "Simulation time:                 %f seconds\n", max_run_time);
+        g_output.output( "Total time:                      %f seconds\n", max_total_time);
+        g_output.output( "Simulated time:                  %s\n", threadInfo[0].simulated_time.toStringBestSI().c_str());
+        g_output.output( "\n");
+        g_output.output( "Simulation Resource Information:\n");
+        g_output.output( "Max Resident Set Size:           %s\n",
+                max_rss_ua.toStringBestSI().c_str());
+        g_output.output( "Approx. Global Max RSS Size:     %s\n",
+                global_rss_ua.toStringBestSI().c_str());
+        g_output.output( "Max Local Page Faults:           %" PRIu64 " faults\n",
+                local_max_pf);
+        g_output.output( "Global Page Faults:              %" PRIu64 " faults\n",
+                global_pf);
+        g_output.output( "Max Output Blocks:               %" PRIu64 " blocks\n",
+                global_max_io_in);
+        g_output.output( "Max Input Blocks:                %" PRIu64 " blocks\n",
+                global_max_io_out);
+        g_output.output( "Max mempool usage:               %s\n",
+                max_mempool_size_ua.toStringBestSI().c_str());
+        g_output.output( "Global mempool usage:            %s\n",
+                global_mempool_size_ua.toStringBestSI().c_str());
+        g_output.output( "Global active activities:        %" PRIu64 " activities\n",
+                global_active_activities);
+        g_output.output( "Current global TimeVortex depth: %" PRIu64 " entries\n",
+                global_current_tv_depth);
+        g_output.output( "Max TimeVortex depth:            %" PRIu64 " entries\n",
+                global_max_tv_depth);
+        g_output.output( "Max Sync data size:              %s\n",
+                global_max_sync_data_size_ua.toStringBestSI().c_str());
+        g_output.output( "Global Sync data size:           %s\n",
+                global_sync_data_size_ua.toStringBestSI().c_str());
+        g_output.output( "------------------------------------------------------------\n");
+        g_output.output( "\n" );
+        g_output.output( "\n" );
 
     }
 

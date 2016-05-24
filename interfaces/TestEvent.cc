@@ -31,5 +31,3 @@ TestEvent::~TestEvent()
 	printf("Deleting TestEvent\n");
     }
 }
-
-BOOST_CLASS_EXPORT(SST::Interfaces::TestEvent)
